@@ -1,0 +1,30 @@
+{
+	"name": "sp_scrapper",
+	"version": "1.0.0",
+	"description": "[![Package Version](https://img.shields.io/hexpm/v/sp_scrapper)](https://hex.pm/packages/sp_scrapper) [![Hex Docs](https://img.shields.io/badge/hex-docs-ffaff3)](https://hexdocs.pm/sp_scrapper/)",
+	"type": "module",
+	"main": "src/index.js",
+	"directories": {
+		"test": "test"
+	},
+	"scripts": {
+		"start": "node .",
+		"test": "echo \"Error: no test specified\" && exit 1"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ValJed/sp_scrapper.git"
+	},
+	"author": "",
+	"license": "ISC",
+	"bugs": {
+		"url": "https://github.com/ValJed/sp_scrapper/issues"
+	},
+	"homepage": "https://github.com/ValJed/sp_scrapper#readme",
+	"dependencies": {
+		"playwright": "^1.59.1"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.4.15"
+	}
+}
