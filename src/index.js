@@ -1,16 +1,22 @@
 import { chromium } from "playwright";
+import fs from "node:fs";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import path from "node:path";
+import os from "node:os";
 
 const season = process.argv[2];
 const homeUrl = "https://south-park-tv.fr/";
 const seasonUrlPattern = `${homeUrl}${season}-`;
 const episodeUrlPattern = /episode-(\d+)/;
+const urlPattern = /(\d+).mp4/;
 
 const browser = await chromium.launch({
 	executablePath: "/run/current-system/sw/bin/chromium",
 	userAgent:
 		"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 	proxy: { server: "socks5://127.0.0.1:9050" },
-	args: ["--disable-blink-features=automationcontrolled"], // hides automation flag
+	args: ["--disable-blink-features=automationcontrolled"],
 	timeout: 60000, // 60 seconds instead of default 30
 });
 
@@ -55,7 +61,18 @@ directPage.on("request", (request) => {
 		url.includes("stor=") &&
 		url.includes("noip=")
 	) {
-		videosUrls.push(url);
+		const matched = url.match(urlPattern);
+		if (!matched) {
+			return null;
+		}
+		const [_, episodeName] = matched;
+		if (videosUrls.some((video) => video.url.includes(episodeName))) {
+			return;
+		}
+		videosUrls.push({
+			name: formatName(videosUrls.length + 1),
+			url,
+		});
 	}
 });
 
@@ -74,34 +91,54 @@ await wait(2000);
 
 const episodeLinks = await getEpisodeLinks(seasonUrl);
 
-const videoInfos = [];
-for (const { name, url } of episodeLinks) {
+for (const url of episodeLinks) {
 	try {
-		const videoUrl = await downloadEpisode(url);
-		if (videoUrl) {
-			videoInfos.push({
-				name,
-				videoUrl,
-			});
-		}
+		await triggerPlayVideo(url);
 	} catch (err) {
 		console.error(err);
 	}
 }
 
-const finalData = mapVideoUrls(videoInfos, videosUrls);
+await wait(2000);
 
-function mapVideoUrls(infos, urls) {
-	return infos.map(({ name, videoUrl }) => {
-		const finalUrl = urls.find((url) => url.includes(videoUrl));
-		return {
-			name,
-			videoUrl: finalUrl,
-		};
-	});
+const videosPath = path.join(os.homedir(), "Videos", "south_park", season);
+
+fs.mkdirSync(videosPath, { recursive: true });
+
+console.log(" videosUrls", videosUrls);
+for (const { name, url } of videosUrls) {
+	if (["1.mp4", "2.mp4"].includes(name)) {
+		continue;
+	}
+	await downloadVideo(url, `${videosPath}/${name}`);
 }
 
-async function downloadEpisode(url) {
+async function downloadVideo(url, outputPath) {
+	const response = await fetch(url);
+
+	if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+	const total = parseInt(response.headers.get("content-length"), 10);
+	let downloaded = 0;
+
+	const progressStream = new TransformStream({
+		transform(chunk, controller) {
+			downloaded += chunk.length;
+			const percent = ((downloaded / total) * 100).toFixed(1);
+			process.stdout.write(`\rDownloading... ${percent}%`);
+			controller.enqueue(chunk);
+		},
+	});
+
+	await pipeline(
+		Readable.fromWeb(response.body.pipeThrough(progressStream)),
+		fs.createWriteStream(outputPath),
+	);
+
+	console.log("\nDone!");
+}
+
+async function triggerPlayVideo(url) {
 	await page.goto(url, { waitUntil: "domcontentloaded", timeout: 120000 });
 	await wait(4000);
 	try {
@@ -114,20 +151,13 @@ async function downloadEpisode(url) {
 			waitUntil: "domcontentloaded",
 			timeout: 120000,
 		});
-
 		await wait(2000);
-
-		// .vjs-big-play-button[role="button"]
-		// const btn = await directPage.getByLabel("play video");
-		// await btn.scrollIntoViewIfNeeded();
-		// await btn.click({ force: true });
 		await directPage.evaluate(() => {
 			document
 				.querySelector('.vjs-big-play-button[aria-label="play video"]')
 				.click();
 		});
 
-		console.log("clicked play button successfully");
 		return frameSrc;
 	} catch (err) {
 		console.error(err);
@@ -152,13 +182,10 @@ async function getEpisodeLinks(url) {
 			if (!matched) {
 				return null;
 			}
-			const [_, name] = matched;
-			return {
-				name,
-				url,
-			};
+			return url;
 		})
-		.filter((formatted) => formatted);
+		.filter((formatted) => formatted)
+		.sort();
 }
 
 function wait(time) {
@@ -167,4 +194,9 @@ function wait(time) {
 			resolve();
 		}, time);
 	});
+}
+
+function formatName(number) {
+	const str = `${number}.mp4`;
+	return str.length > 1 ? str : `0${str}`;
 }
