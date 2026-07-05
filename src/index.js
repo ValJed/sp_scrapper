@@ -1,13 +1,13 @@
-import { chromium } from "playwright";
 import fs from "node:fs";
-import { Readable } from "node:stream";
-import { pipeline } from "node:stream/promises";
-import path from "node:path";
 import os from "node:os";
+import path from "node:path";
+import { Readable } from "node:stream";
+import { chromium } from "playwright";
+import { pipeline } from "node:stream/promises";
 
 const season = process.argv[2];
 const homeUrl = "https://south-park-tv.fr/";
-const seasonUrlPattern = `${homeUrl}${season}-`;
+const seasonUrlPattern = `${homeUrl}${season}`;
 const episodeUrlPattern = /episode-(\d+)/;
 const urlPattern = /(\d+).mp4/;
 
@@ -52,6 +52,16 @@ await directPage.route("**/*", (route) => {
 	}
 });
 
+// Handle Ctrl+C and termination
+process.on("SIGINT", async () => {
+	await cleanup();
+	process.exit(0);
+});
+process.on("SIGTERM", async () => {
+	await cleanup();
+	process.exit(0);
+});
+
 const videosUrls = [];
 directPage.on("request", (request) => {
 	const url = request.url();
@@ -61,6 +71,7 @@ directPage.on("request", (request) => {
 		url.includes("stor=") &&
 		url.includes("noip=")
 	) {
+		console.log("urlPattern", urlPattern);
 		const matched = url.match(urlPattern);
 		if (!matched) {
 			return null;
@@ -76,51 +87,59 @@ directPage.on("request", (request) => {
 	}
 });
 
-await page.goto(homeUrl, { waitUntil: "load" });
-
-await wait(4000);
-const seasonUrl = await getSeasonPage();
-
-if (!seasonUrl) {
-	console.log("No page found for ", season);
-	process.exit(1);
+try {
+	await main();
+} finally {
+	await cleanup();
 }
 
-await page.goto(seasonUrl, { waitUntil: "load" });
-await wait(2000);
-
-const episodeLinks = await getEpisodeLinks(seasonUrl);
-
-for (const url of episodeLinks) {
-	try {
-		await triggerPlayVideo(url);
-	} catch (err) {
-		console.error(err);
-	}
+async function cleanup() {
+	await Promise.allSettled([
+		page.close(),
+		directPage.close(),
+		browser.close(),
+		directBrowser.close(),
+	]);
 }
 
-await wait(2000);
-
-const videosPath = path.join(os.homedir(), "Videos", "south_park", season);
-
-fs.mkdirSync(videosPath, { recursive: true });
-
-console.log(" videosUrls", videosUrls);
-for (const { name, url } of videosUrls) {
-	if (["1.mp4", "2.mp4"].includes(name)) {
-		continue;
+async function main() {
+	await page.goto(homeUrl, { waitUntil: "networkidle" });
+	await wait(2000);
+	const seasonUrl = await getSeasonPage();
+	if (!seasonUrl) {
+		throw new Error("No page found for ", season);
 	}
-	await downloadVideo(url, `${videosPath}/${name}`);
+	await page.goto(seasonUrl, { waitUntil: "load" });
+	await wait(1000);
+	const episodeLinks = await getEpisodeLinks(seasonUrl);
+	console.log("episodeLinks", episodeLinks);
+	for (const url of episodeLinks) {
+		try {
+			await triggerPlayVideo(url);
+			await wait(2000);
+		} catch (err) {
+			console.error(err);
+		}
+	}
+	await wait(2000);
+	const videosPath = path.join(os.homedir(), "Videos", "south_park", season);
+	fs.mkdirSync(videosPath, { recursive: true });
+	console.log("=====> Going to download <=====");
+	console.log(videosUrls);
+	for (const { name, url } of videosUrls) {
+		// if (["1.mp4", "2.mp4"].includes(name)) {
+		// 	continue;
+		// }
+		await downloadVideo(url, `${videosPath}/${name}`);
+	}
 }
 
 async function downloadVideo(url, outputPath) {
 	const response = await fetch(url);
-
 	if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
 	const total = parseInt(response.headers.get("content-length"), 10);
 	let downloaded = 0;
-
 	const progressStream = new TransformStream({
 		transform(chunk, controller) {
 			downloaded += chunk.length;
@@ -140,7 +159,7 @@ async function downloadVideo(url, outputPath) {
 
 async function triggerPlayVideo(url) {
 	await page.goto(url, { waitUntil: "domcontentloaded", timeout: 120000 });
-	await wait(4000);
+	await wait(2000);
 	try {
 		const frameElement = await page.waitForSelector(
 			'iframe[src*="https://video.sibnet.ru"]',
